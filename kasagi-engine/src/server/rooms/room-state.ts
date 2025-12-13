@@ -165,6 +165,7 @@ export class RoomState {
    */
   public applyInput(input: PlayerInput, _socket?: WebSocket): EntityDelta {
     const { playerId, payload } = input;
+    console.log('🔵 APPLYING INPUT:', { roomId: this.roomId, playerId, payload }); // ADD THIS
 
     roomLogger.debug({ roomId: this.roomId, playerId }, 'Applying player input');
 
@@ -264,6 +265,7 @@ export class RoomState {
       
       const encoded = encodeDeltaToBase64(fullDelta);
       await publishDelta(this.roomId, encoded);
+      roomLogger.info({ roomId: this.roomId, seq: this.state.seq, tick: this.state.tick }, 'Delta published to Redis');
     } catch (err) {
       roomLogger.error(
         { error: (err as Error).message, roomId: this.roomId },

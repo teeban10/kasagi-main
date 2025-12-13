@@ -88,7 +88,7 @@ export async function publishDelta(roomId: string, encodedDeltaBase64: string): 
   
   try {
     const subscriberCount = await redisClient.publish(channel, encodedDeltaBase64);
-    redisLogger.debug({ roomId, channel, subscriberCount }, 'Delta published to Redis');
+    redisLogger.info({ roomId, channel, subscriberCount }, 'Delta published to Redis');
     return subscriberCount;
   } catch (err) {
     redisLogger.error({ error: (err as Error).message, roomId }, 'Failed to publish delta');
