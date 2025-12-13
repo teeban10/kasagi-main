@@ -1,0 +1,202 @@
+# =============================================================================
+# Redis Sentinel Setup for KasagiEngine Real-Time WebSocket System
+# =============================================================================
+# Architecture:
+#   - 1 Redis Master (redis-master)
+#   - 2 Redis Replicas (redis-replica-1, redis-replica-2)
+#   - 3 Sentinel Nodes (sentinel-1, sentinel-2, sentinel-3)
+#
+# All nodes communicate over the internal 'kasagi-network' Docker network.
+# The master is exposed on port 6379 for external access.
+# Sentinels are exposed on ports 26379, 26380, 26381.
+# =============================================================================
+
+services:
+  # ---------------------------------------------------------------------------
+  # Redis Master Node
+  # ---------------------------------------------------------------------------
+  # Primary Redis instance that accepts all write operations.
+  # Replicas will automatically synchronize from this node.
+  redis-master:
+    image: redis:7.2-alpine
+    container_name: kasagi-redis-master
+    hostname: redis-master
+    command: redis-server /usr/local/etc/redis/redis.conf
+    ports:
+      # Expose master on standard Redis port for external connections
+      - "6380:6379"
+    volumes:
+      # Mount custom Redis configuration
+      - ./redis/redis-master.conf:/usr/local/etc/redis/redis.conf:ro
+      # Persistent data volume for RDB/AOF files
+      - redis-master-data:/data
+    networks:
+      - kasagi-network
+    healthcheck:
+      # Health check using Redis PING command
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+      start_period: 10s
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------------------
+  # Redis Replica 1
+  # ---------------------------------------------------------------------------
+  # First replica node - automatically syncs from master.
+  # Can be promoted to master by Sentinel during failover.
+  redis-replica-1:
+    image: redis:7.2-alpine
+    container_name: kasagi-redis-replica-1
+    hostname: redis-replica-1
+    command: redis-server /usr/local/etc/redis/redis.conf
+    ports:
+      # Expose replica on different port for monitoring/debugging
+      - "6381:6379"
+    volumes:
+      - ./redis/redis-replica.conf:/usr/local/etc/redis/redis.conf:ro
+      - redis-replica-1-data:/data
+    networks:
+      - kasagi-network
+    depends_on:
+      redis-master:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+      start_period: 10s
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------------------
+  # Redis Replica 2
+  # ---------------------------------------------------------------------------
+  # Second replica node - provides additional redundancy.
+  # Can also be promoted to master during failover.
+  redis-replica-2:
+    image: redis:7.2-alpine
+    container_name: kasagi-redis-replica-2
+    hostname: redis-replica-2
+    command: redis-server /usr/local/etc/redis/redis.conf
+    ports:
+      - "6382:6379"
+    volumes:
+      - ./redis/redis-replica.conf:/usr/local/etc/redis/redis.conf:ro
+      - redis-replica-2-data:/data
+    networks:
+      - kasagi-network
+    depends_on:
+      redis-master:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+      start_period: 10s
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------------------
+  # Sentinel Node 1
+  # ---------------------------------------------------------------------------
+  # First Sentinel - monitors master health and coordinates failover.
+  # Sentinels form a quorum to decide on failover actions.
+  sentinel-1:
+    image: redis:7.2-alpine
+    container_name: kasagi-sentinel-1
+    hostname: sentinel-1
+    command: redis-sentinel /usr/local/etc/redis/sentinel.conf
+    ports:
+      # Expose Sentinel port for client discovery
+      - "26379:26379"
+    volumes:
+      # Each Sentinel needs its own config as it gets modified at runtime
+      - ./sentinel/sentinel-1.conf:/usr/local/etc/redis/sentinel.conf
+      - sentinel-1-data:/data
+    networks:
+      - kasagi-network
+    depends_on:
+      - redis-master
+      - redis-replica-1
+      - redis-replica-2
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------------------
+  # Sentinel Node 2
+  # ---------------------------------------------------------------------------
+  # Second Sentinel - participates in quorum decisions.
+  # Having 3 Sentinels allows majority voting (2 out of 3).
+  sentinel-2:
+    image: redis:7.2-alpine
+    container_name: kasagi-sentinel-2
+    hostname: sentinel-2
+    command: redis-sentinel /usr/local/etc/redis/sentinel.conf
+    ports:
+      - "26380:26379"
+    volumes:
+      - ./sentinel/sentinel-2.conf:/usr/local/etc/redis/sentinel.conf
+      - sentinel-2-data:/data
+    networks:
+      - kasagi-network
+    depends_on:
+      - redis-master
+      - redis-replica-1
+      - redis-replica-2
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------------------
+  # Sentinel Node 3
+  # ---------------------------------------------------------------------------
+  # Third Sentinel - completes the quorum.
+  # 3 Sentinels can tolerate 1 Sentinel failure and still reach consensus.
+  sentinel-3:
+    image: redis:7.2-alpine
+    container_name: kasagi-sentinel-3
+    hostname: sentinel-3
+    command: redis-sentinel /usr/local/etc/redis/sentinel.conf
+    ports:
+      - "26381:26379"
+    volumes:
+      - ./sentinel/sentinel-3.conf:/usr/local/etc/redis/sentinel.conf
+      - sentinel-3-data:/data
+    networks:
+      - kasagi-network
+    depends_on:
+      - redis-master
+      - redis-replica-1
+      - redis-replica-2
+    restart: unless-stopped
+
+# =============================================================================
+# Networks
+# =============================================================================
+networks:
+  kasagi-network:
+    driver: bridge
+    name: kasagi-network
+    ipam:
+      config:
+        # Custom subnet for predictable internal addressing
+        - subnet: 172.28.0.0/16
+
+# =============================================================================
+# Volumes
+# =============================================================================
+# Named volumes for data persistence across container restarts.
+# This ensures RDB snapshots and AOF logs survive container recreation.
+volumes:
+  redis-master-data:
+    name: kasagi-redis-master-data
+  redis-replica-1-data:
+    name: kasagi-redis-replica-1-data
+  redis-replica-2-data:
+    name: kasagi-redis-replica-2-data
+  sentinel-1-data:
+    name: kasagi-sentinel-1-data
+  sentinel-2-data:
+    name: kasagi-sentinel-2-data
+  sentinel-3-data:
+    name: kasagi-sentinel-3-data
+

@@ -1,0 +1,4 @@
+/node_modules
+/kasagi-engine/node_modules
+.env
+.cursor/debug.log
