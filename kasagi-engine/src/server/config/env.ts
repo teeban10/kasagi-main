@@ -26,6 +26,7 @@ validateEnv();
 // Generate unique instance ID if not provided
 const instanceId = process.env.INSTANCE_ID || `instance_${randomUUID().slice(0, 8)}`;
 console.log('redis master name', process.env.REDIS_MASTER_NAME);
+const debugUiEnabled = process.env.DEBUG_UI_ENABLED !== 'false';
 export const config = {
   nodeEnv: process.env.NODE_ENV || 'development',
   port: parseInt(process.env.PORT || '3000', 10),
@@ -48,6 +49,10 @@ export const config = {
   snapshotInterval: parseInt(process.env.SNAPSHOT_INTERVAL || '100', 10), // ticks
 
   logLevel: process.env.LOG_LEVEL || 'info',
+  debugUI: {
+    enabled: debugUiEnabled,
+    port: parseInt(process.env.DEBUG_UI_PORT || '3000', 10),
+  },
 } as const;
 
 export type Config = typeof config;

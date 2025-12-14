@@ -4,6 +4,7 @@ import { redisClient } from './redis/redis-client.js';
 import { redisSubscriber } from './redis/redis-subscriber.js';
 import { startWsServer, stopWsServer } from './websocket/ws-server.js';
 import { saveAllSnapshots } from './rooms/room-manager.js';
+import { startDebugUi, stopDebugUi } from './debug-ui.js';
 
 const mainLogger = logger.child({ module: 'main', instanceId: config.instanceId });
 
@@ -36,6 +37,7 @@ async function bootstrap(): Promise<void> {
   // Start WebSocket server
   startWsServer();
   mainLogger.info({ port: config.wsPort }, 'WebSocket server started');
+  startDebugUi();
 
   mainLogger.info('KasagiEngine core modules initialized');
   mainLogger.info(
@@ -61,6 +63,7 @@ async function bootstrap(): Promise<void> {
       // Close Redis connections
       await redisClient.quit();
       await redisSubscriber.quit();
+      await stopDebugUi();
       
       mainLogger.info('Graceful shutdown complete');
       process.exit(0);
