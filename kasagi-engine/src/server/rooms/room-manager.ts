@@ -12,6 +12,9 @@ const rooms: Map<string, RoomState> = new Map();
 // Pending room loads (to prevent race conditions)
 const pendingLoads: Map<string, Promise<RoomState>> = new Map();
 
+// Pending room deletions (empty-room TTL)
+const pendingDeletes: Map<string, NodeJS.Timeout> = new Map();
+
 /**
  * Get an existing room or create a new one if it doesn't exist.
  * Attempts to load from Redis snapshot first.
@@ -76,6 +79,13 @@ export async function deleteRoom(roomId: string): Promise<boolean> {
   const room = rooms.get(roomId);
 
   if (room) {
+    // Cancel any pending delete timer
+    const pending = pendingDeletes.get(roomId);
+    if (pending) {
+      clearTimeout(pending);
+      pendingDeletes.delete(roomId);
+    }
+
     // Check if room has connected clients
     if (room.getClientCount() > 0) {
       managerLogger.warn(
@@ -95,6 +105,9 @@ export async function deleteRoom(roomId: string): Promise<boolean> {
       );
     }
 
+    // Cleanup any internal timers (disconnect grace, etc.)
+    room.shutdown();
+
     rooms.delete(roomId);
     managerLogger.info({ roomId, totalRooms: rooms.size }, 'Room destroyed');
     return true;
@@ -109,6 +122,14 @@ export async function deleteRoom(roomId: string): Promise<boolean> {
  */
 export async function joinRoom(roomId: string, socket: WebSocket): Promise<RoomState> {
   const room = await getOrCreateRoom(roomId);
+
+  // Cancel pending deletion if room was empty and waiting for TTL
+  const pending = pendingDeletes.get(roomId);
+  if (pending) {
+    clearTimeout(pending);
+    pendingDeletes.delete(roomId);
+  }
+
   room.addClient(socket);
 
   // Update socket metadata
@@ -146,9 +167,28 @@ export async function leaveRoom(roomId: string, socket: WebSocket): Promise<void
     'Client left room'
   );
 
-  // Delete room if empty
+  // Delete room if empty (with TTL)
   if (room.getClientCount() === 0) {
-    await deleteRoom(roomId);
+    const ttlMs = config.game.roomEmptyTtlMs;
+    if (ttlMs <= 0) {
+      await deleteRoom(roomId);
+      return;
+    }
+
+    // Only schedule once
+    if (!pendingDeletes.has(roomId)) {
+      const timer = setTimeout(() => {
+        const current = rooms.get(roomId);
+        if (current && current.getClientCount() === 0) {
+          void deleteRoom(roomId);
+        } else {
+          // Someone rejoined; no-op
+          pendingDeletes.delete(roomId);
+        }
+      }, ttlMs);
+      pendingDeletes.set(roomId, timer);
+      managerLogger.info({ roomId, ttlMs }, 'Scheduled empty room deletion');
+    }
   }
 }
 
@@ -182,7 +222,10 @@ export async function cleanupEmptyRooms(): Promise<number> {
 
   for (const [roomId, room] of rooms) {
     if (room.getClientCount() === 0) {
-      roomsToDelete.push(roomId);
+      // If a TTL timer is already scheduled, let it handle cleanup.
+      if (!pendingDeletes.has(roomId)) {
+        roomsToDelete.push(roomId);
+      }
     }
   }
 

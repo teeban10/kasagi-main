@@ -49,6 +49,19 @@ export const config = {
   snapshotInterval: parseInt(process.env.SNAPSHOT_INTERVAL || '100', 10), // ticks
 
   logLevel: process.env.LOG_LEVEL || 'info',
+  game: {
+    // How long to keep a player's entity after their socket disconnects.
+    // If they reconnect with the same playerId during this window, they resume.
+    playerDisconnectGraceMs: parseInt(process.env.PLAYER_DISCONNECT_GRACE_MS || '30000', 10),
+
+    // How long to keep an empty room in memory before destroying it.
+    // Allows "room comes back" reconnects when everyone briefly drops.
+    roomEmptyTtlMs: parseInt(process.env.ROOM_EMPTY_TTL_MS || '60000', 10),
+
+    // Enforce a single active socket per (roomId, playerId).
+    // New join replaces the old connection.
+    singleConnectionPerPlayer: process.env.SINGLE_CONNECTION_PER_PLAYER !== 'false',
+  },
   debugUI: {
     enabled: debugUiEnabled,
     port: parseInt(process.env.DEBUG_UI_PORT || '3000', 10),

@@ -2,7 +2,7 @@ KasagiEngine Real-Time State Synchronization Service
 Architecture & Design Document
 ====================================================
 
-Author: (Your Name)  
+Author: Teeban Kumar
 Purpose: Backend Challenge Submission  
 Tech Stack: Node.js, WebSockets, Redis
 

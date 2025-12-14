@@ -44,6 +44,8 @@ export class RoomState {
   public clients: Set<WebSocket>;
   private lastSnapshotTick: number;
   private isApplyingRemoteDelta: boolean;
+  private playerSockets: Map<string, Set<WebSocket>>;
+  private playerDisconnectTimers: Map<string, NodeJS.Timeout>;
 
   constructor(roomId: string, initialState?: RoomStateData) {
     this.roomId = roomId;
@@ -56,6 +58,8 @@ export class RoomState {
     this.clients = new Set();
     this.lastSnapshotTick = this.state.tick;
     this.isApplyingRemoteDelta = false;
+    this.playerSockets = new Map();
+    this.playerDisconnectTimers = new Map();
 
     roomLogger.info({ roomId, tick: this.state.tick, seq: this.state.seq }, 'RoomState initialized');
   }
@@ -125,6 +129,40 @@ export class RoomState {
    */
   public addClient(socket: WebSocket): void {
     this.clients.add(socket);
+
+    const kasagiSocket = socket as KasagiSocket;
+    const playerId = kasagiSocket.playerId;
+    if (playerId) {
+      // Cancel any pending removal timer for this player
+      const pending = this.playerDisconnectTimers.get(playerId);
+      if (pending) {
+        clearTimeout(pending);
+        this.playerDisconnectTimers.delete(playerId);
+      }
+
+      // Track active sockets per playerId
+      const set = this.playerSockets.get(playerId) ?? new Set<WebSocket>();
+      set.add(socket);
+      this.playerSockets.set(playerId, set);
+
+      // Enforce single active socket per player (optional)
+      if (config.game.singleConnectionPerPlayer && set.size > 1) {
+        for (const other of Array.from(set)) {
+          if (other === socket) continue;
+          set.delete(other);
+          this.clients.delete(other);
+          try {
+            other.close(4001, 'Replaced by new connection');
+          } catch {
+            // ignore
+          }
+        }
+      }
+
+      // Mark player as connected in entity state (presence metadata)
+      this.applyPresencePatch(playerId, { connected: true, lastSeen: Date.now(), disconnectedAt: null });
+    }
+
     roomLogger.info(
       { roomId: this.roomId, clientCount: this.clients.size },
       'Client added to room'
@@ -136,14 +174,39 @@ export class RoomState {
    */
   public removeClient(socket: WebSocket): void {
     this.clients.delete(socket);
-    
+
     const kasagiSocket = socket as KasagiSocket;
-    if (kasagiSocket.playerId && this.state.entities[kasagiSocket.playerId]) {
-      const delta = this.removeEntity(kasagiSocket.playerId);
-      if (!isDeltaEmpty(delta)) {
-        this.broadcastDelta(delta);
-        // Publish removal to Redis
-        this.publishDeltaToRedis(delta);
+    const playerId = kasagiSocket.playerId;
+    if (playerId) {
+      const set = this.playerSockets.get(playerId);
+      if (set) {
+        set.delete(socket);
+        if (set.size === 0) {
+          this.playerSockets.delete(playerId);
+
+          // Mark player as disconnected (but keep entity for reconnection window)
+          this.applyPresencePatch(playerId, { connected: false, lastSeen: Date.now(), disconnectedAt: Date.now() });
+
+          // Schedule entity removal after grace period (if they don't reconnect)
+          if (!this.playerDisconnectTimers.has(playerId)) {
+            const graceMs = config.game.playerDisconnectGraceMs;
+            const timer = setTimeout(() => {
+              // If player still has no active sockets, remove their entity
+              const stillConnected = this.playerSockets.get(playerId)?.size;
+              if (!stillConnected && this.state.entities[playerId]) {
+                const delta = this.removeEntity(playerId);
+                if (!isDeltaEmpty(delta)) {
+                  this.broadcastDelta(delta);
+                  // Fire-and-forget; internal error handling already logs
+                  void this.publishDeltaToRedis(delta);
+                }
+              }
+              this.playerDisconnectTimers.delete(playerId);
+            }, graceMs);
+
+            this.playerDisconnectTimers.set(playerId, timer);
+          }
+        }
       }
     }
     
@@ -151,6 +214,44 @@ export class RoomState {
       { roomId: this.roomId, clientCount: this.clients.size },
       'Client removed from room'
     );
+  }
+
+  /**
+   * Cleanup timers when room is destroyed.
+   */
+  public shutdown(): void {
+    for (const timer of this.playerDisconnectTimers.values()) {
+      clearTimeout(timer);
+    }
+    this.playerDisconnectTimers.clear();
+    this.playerSockets.clear();
+  }
+
+  /**
+   * Apply a small metadata patch to a player's entity (presence).
+   * Uses the same delta pipeline: update state -> compute delta -> broadcast + publish.
+   */
+  private applyPresencePatch(playerId: string, patch: Record<string, unknown>): void {
+    // Don't mutate state while applying remote delta
+    if (this.isApplyingRemoteDelta) return;
+
+    this.previousState = this.cloneState();
+    this.state.entities[playerId] = {
+      ...(this.state.entities[playerId] ?? {}),
+      ...patch,
+    };
+    this.state.tick++;
+    this.state.seq++;
+
+    const delta = computeEntityDelta(
+      this.previousState.entities as Record<string, Record<string, unknown>>,
+      this.state.entities as Record<string, Record<string, unknown>>
+    );
+
+    if (!isDeltaEmpty(delta)) {
+      this.broadcastDelta(delta);
+      void this.publishDeltaToRedis(delta);
+    }
   }
 
   /**
